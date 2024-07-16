@@ -11,9 +11,10 @@ import (
 
 type (
 	FileStorage struct {
-		basePath string
-		files    []string
-		extCache map[string][]string
+		basePath  string
+		files     []string
+		filePaths map[string]string
+		extCache  map[string][]string
 	}
 
 	File struct {
@@ -24,33 +25,26 @@ type (
 )
 
 func NewFileStorage(basePath string) *FileStorage {
-	items, err := os.ReadDir(basePath)
+	baseAbsPath, err := filepath.Abs(basePath)
 	if err != nil {
 		panic(err)
 	}
 
-	files := make([]string, 0, len(items))
-
-	for _, item := range items {
-		if item.IsDir() {
-			continue
-		}
-		files = append(files, item.Name())
+	filePaths := make(map[string]string)
+	files, err := readFiles(filePaths, baseAbsPath)
+	if err != nil {
+		panic(err)
 	}
 
 	if len(files) == 0 {
 		panic("no files found in " + basePath)
 	}
 
-	baseAbsPath, err := filepath.Abs(basePath)
-	if err != nil {
-		panic(err)
-	}
-
 	return &FileStorage{
-		basePath: baseAbsPath,
-		files:    files,
-		extCache: make(map[string][]string),
+		basePath:  baseAbsPath,
+		files:     files,
+		filePaths: filePaths,
+		extCache:  make(map[string][]string),
 	}
 }
 
@@ -58,49 +52,47 @@ func (fs *FileStorage) ListFiles() []string {
 	return fs.files
 }
 
-func (fs *FileStorage) HasFile(filename string) bool {
-	for _, file := range fs.files {
-		if file == filename {
-			return true
-		}
+func (fs *FileStorage) HasFile(key string) bool {
+	if _, ok := fs.filePaths[key]; ok {
+		return true
 	}
 	return false
 }
 
-func (fs *FileStorage) ReadFile(filename string) (File, error) {
-	filePath := path.Join(fs.basePath, filename)
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return File{}, err
+func (fs *FileStorage) ReadFile(key string) (File, error) {
+	if filepath, ok := fs.filePaths[key]; ok {
+		data, err := os.ReadFile(filepath)
+		if err != nil {
+			return File{}, err
+		}
+		return File{
+			Name:    parseFilenameFromKey(key),
+			Path:    filepath,
+			Content: data,
+		}, nil
 	}
-	return File{
-		Name:    filename,
-		Path:    filePath,
-		Content: data,
-	}, nil
+	return File{}, fmt.Errorf("file '%s' not found", key)
 }
 
-// ReadRandFile reads a random file from the storage.
+// ReadRandFile reads a random file from the storage
 func (fs *FileStorage) ReadRandFile() (File, error) {
-	randIndex := rand.IntN(len(fs.files))
-	return fs.ReadFile(fs.files[randIndex])
+	return fs.readRandFile(fs.files)
 }
 
-// ReadRandFileWithExt reads a random file with the given extension from the storage.
+// ReadRandFileWithExt reads a random file with the given extension from the storage
 func (fs *FileStorage) ReadRandFileWithExt(ext string) (File, error) {
 	ext = strings.ToLower(ext)
 
 	var files []string
 
 	if files, ok := fs.extCache[ext]; ok {
-		randIndex := rand.IntN(len(files))
-		return fs.ReadFile(files[randIndex])
+		return fs.readRandFile(files)
 	}
 
 	files = make([]string, 0, len(fs.files))
-	for _, file := range fs.files {
-		if strings.ToLower(path.Ext(file)) == ext {
-			files = append(files, file)
+	for _, filename := range fs.files {
+		if strings.ToLower(path.Ext(filename)) == ext {
+			files = append(files, filename)
 		}
 	}
 
@@ -110,6 +102,31 @@ func (fs *FileStorage) ReadRandFileWithExt(ext string) (File, error) {
 
 	fs.extCache[ext] = files
 
+	return fs.readRandFile(files)
+}
+
+// readRandFile reads a random file from the given slice of filenames
+func (fs *FileStorage) readRandFile(files []string) (File, error) {
 	randIndex := rand.IntN(len(files))
-	return fs.ReadFile(files[randIndex])
+	key := files[randIndex]
+
+	filename := parseFilenameFromKey(key)
+	filepath := fs.filePaths[key]
+
+	data, err := os.ReadFile(filepath)
+	if err != nil {
+		return File{}, err
+	}
+	return File{
+		Name:    filename,
+		Path:    filepath,
+		Content: data,
+	}, nil
+}
+
+// parseFilenameFromKey extracts filename from given key (subdir/filename)
+// and returns it as a string
+func parseFilenameFromKey(key string) string {
+	lastIndex := strings.LastIndex(key, "/")
+	return key[lastIndex+1:]
 }
